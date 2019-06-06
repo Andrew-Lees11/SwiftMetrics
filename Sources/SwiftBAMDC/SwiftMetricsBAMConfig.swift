@@ -25,6 +25,8 @@ import Cryptor
 import Foundation
 import Dispatch
 import Configuration
+import NIOHTTPClient
+import NIOHTTP1
 
 /*
  #if os(macOS) || os(iOS) || os(tvOS) || os(watchOS)
@@ -540,62 +542,51 @@ public class BMConfig : IBAMConfig {
                     headerCopy["X-TransactionId"] = UUID().uuidString.lowercased()
                 }*/
 
-                var method = "PUT"
+                var method = HTTPMethod.PUT
                 if(reqType.uppercased() == "GET") {
-                    method = "GET"
+                    method = .GET
                 }
-            
-                var request = URLRequest(url: url)
-                request.httpMethod = method
+                var request = try HTTPClient.Request(url: url, version: HTTPVersion(major: 1, minor: 1))
+                request.method = method
 
                 //TODO: don't log token in headers, temporarily changed to info
                 //Log.info("Initiating http request  Headers: \(headerCopy) APMData: \(apmData)")
                 Log.debug("[SwiftMetricsBAMConfig] Initiating http request  Headers: \(headers) APMData: \(apmData)")
                 
-                request.httpBody = jsonData
+                request.body = .data(jsonData)
                 for (key, val) in headers {
-                    request.setValue(val, forHTTPHeaderField: key)
+                    request.headers.replaceOrAdd(name: key, value: val)
                 }
-                let task = URLSession.shared.dataTask(with: request) { data, response, error in
-                 
-                    if let e = error {
-                        //client side error
-                        Log.error("[SwiftMetricsBAMConfig] Failed to create connection to \(urlString): " + e.localizedDescription)
-                    }
-                    else if let httpResponse = response, let receivedData = data {
-                        
-                        if let ds = String(data: receivedData, encoding: String.Encoding.utf8) {
+                let client = HTTPClient(eventLoopGroupProvider: .createNew)
+                defer {
+                    try? client.syncShutdown()
+                }
+                client.execute(request: request).whenComplete { result in
+                    switch result {
+                    case .success(let response):
+                        guard let body = response.body else {
+                            Log.error("[SwiftMetricsBAMConfig] Error sending data: URL: \(urlString) : Response: \(response.status)")
+                            return taskCallback(false, -1, nil)
+                        }
+                        if let ds = body.getString(at: 0, length: body.readableBytes) {
                             Log.debug("[SwiftMetricsBAMConfig] response as string =>" + ds + "<=")
                         }
+                        let bodyData = Data(body.getBytes(at: 0, length: body.readableBytes) ?? [])
+                        let json = try? JSONSerialization.jsonObject(with: bodyData)
                         
-                        //var result: String = NSString (data: receivedData, encoding: String.Encoding.utf8.rawValue)
-                        let json = try? JSONSerialization.jsonObject(with: receivedData, options: [])
-                        
-                        guard let httpURLResponse = httpResponse as? HTTPURLResponse else {
-                            Log.error("[SwiftMetricsBAMConfig] Failed to convert response to HTTPURLResponse")
-                            taskCallback(false, -1, nil)
-                            return
-                        }
-                        switch httpURLResponse.statusCode {
-                            
-                        case 200...299:
-                            
+                        if response.status.code < 300 && response.status.code >= 200 {
                             // Temporarily put to info as static method is disabling it, will debug later
-                            Log.debug("[SwiftMetricsBAMConfig] \(String(describing:request.httpMethod)) successful: StatusCode: \(httpURLResponse.statusCode) Response: \(String(describing:response)), JSON: \(String(describing:json))")
+                            Log.debug("[SwiftMetricsBAMConfig] \(request.method.rawValue) successful: StatusCode: \(response.status) Response: \(response), JSON: \(String(describing:json))")
                             
-                            taskCallback(true, httpURLResponse.statusCode, json as Any?)
-                            
-                        default:
-                            Log.error("[SwiftMetricsBAMConfig] \(String(describing:request.httpMethod)) request got response \(httpURLResponse.statusCode) and response \(httpResponse)")
-                            taskCallback(false, httpURLResponse.statusCode, receivedData as Any?)
+                            taskCallback(true, Int(response.status.code), json as Any?)
+                        } else {
+                            Log.error("[SwiftMetricsBAMConfig] \(String(request.method.rawValue)) request got response \(response.status) and response \(response)")
+                            taskCallback(false, Int(response.status.code), bodyData as Any?)
                         }
-                    }
-                    else {
-                        Log.error("[SwiftMetricsBAMConfig] Error sending data: URL: \(urlString) : Response: \(String(describing:data)), Error: \(String(describing:error))")
-                        taskCallback(false, -1, nil)
+                    case .failure(let error):
+                        Log.error("[SwiftMetricsBAMConfig] Failed to create connection to \(urlString): " + error.localizedDescription)
                     }
                 }
-                task.resume()
             
         } catch {
             Log.warning("[SwiftMetricsBAMConfig] Kitura request failed: \(error.localizedDescription)")

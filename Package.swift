@@ -48,11 +48,12 @@ let package = Package(
     .package(url: "https://github.com/IBM-Swift/Swift-cfenv.git", from: "6.0.0"),
     .package(url: "https://github.com/RuntimeTools/omr-agentcore", .exact("3.2.4-swift4")),
     .package(url: "https://github.com/IBM-Swift/BlueCryptor.git", from: "1.0.0"),
+    .package(url: "https://github.com/swift-server/swift-nio-http-client.git", .branch("master")),
   ],
   targets: [
       .target(name: "SwiftMetrics", dependencies: ["agentcore", "hcapiplugin", "envplugin", "cpuplugin", "memplugin", "CloudFoundryEnv"]),
       .target(name: "SwiftMetricsKitura", dependencies: ["SwiftMetrics", "Kitura"]),
-      .target(name: "SwiftBAMDC", dependencies: ["SwiftMetricsKitura", "Kitura-WebSocket", "Cryptor"]),
+      .target(name: "SwiftBAMDC", dependencies: ["SwiftMetricsKitura", "Kitura-WebSocket", "Cryptor", "NIOHTTPClient"]),
       .target(name: "SwiftMetricsBluemix", dependencies: ["SwiftMetricsKitura","SwiftBAMDC"]),
       .target(name: "SwiftMetricsDash", dependencies: ["SwiftMetricsBluemix"]),
       .target(name: "SwiftMetricsREST", dependencies: ["SwiftMetricsKitura"]),

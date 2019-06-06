@@ -22,6 +22,8 @@ import CloudFoundryEnv
 import SwiftMetrics
 import SwiftMetricsKitura
 import SwiftBAMDC
+import NIOHTTPClient
+import NIOHTTP1
 
 fileprivate struct HttpStats {
   fileprivate var count: Double = 0
@@ -385,48 +387,60 @@ public class SwiftMetricsBluemix {
     Log.debug("[Auto-scaling Agent] Attempting to send metrics to \(sendMetricsPath)")
 
     
-    guard let url = URL(string: sendMetricsPath) else {
-        Log.error("[Auto-scaling Agent] Invalid URL")
-        return
+    guard var request = try? HTTPClient.Request(url: sendMetricsPath)  else {
+      Log.error("[Auto-scaling Agent] Invalid URL")
+      return
     }
-    var request = URLRequest(url: url)
-    request.httpMethod = "POST"
-    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    request.setValue("Basic \(authorization)", forHTTPHeaderField: "Authorization")
+
+    request.method = .POST
+    request.headers.add(name: "Content-Type", value: "application/json")
+    request.headers.add(name: "Authorization", value: "Basic \(authorization)")
     do {
-        request.httpBody = try JSONSerialization.data(withJSONObject: asOBJ, options: .prettyPrinted)
+      request.body = .data(try JSONSerialization.data(withJSONObject: asOBJ, options: .prettyPrinted))
     } catch {
-            print("Error converting input to JSON object to post.")
+      print("Error converting input to JSON object to post.")
     }
-    let task = URLSession.shared.dataTask(with: request) { data, response, error in
-        Log.debug("[Auto-scaling Agent] sendMetrics:Request: \(String(describing:request))")
-        Log.debug("[Auto-scaling Agent] sendMetrics:Response: \(String(describing:response))")
-        Log.debug("[Auto-scaling Agent] sendMetrics:Data: \(String(describing:data))")
-        Log.debug("[Auto-scaling Agent] sendMetrics:Error: \(String(describing: error))")
+    let client = HTTPClient(eventLoopGroupProvider: .createNew)
+    defer {
+      try? client.syncShutdown()
     }
-    task.resume()
-    
+    client.execute(request: request).whenComplete { result in
+        switch result {
+        case .success(let response):
+          Log.debug("[Auto-scaling Agent] sendMetrics:Request: \(String(describing:request))")
+          Log.debug("[Auto-scaling Agent] sendMetrics:Response: \(String(describing:response))")
+          Log.debug("[Auto-scaling Agent] sendMetrics:Data: \(String(describing:response.body))")
+        case .failure(let error):
+          Log.debug("[Auto-scaling Agent] sendMetrics:Error: \(String(describing: error))")
+      }
+    }
   }
 
   private func notifyStatus() {
     let notifyStatusPath = "\(host):443/services/agent/status/\(appID)"
     Log.debug("[Auto-scaling Agent] Attempting notifyStatus request to \(notifyStatusPath)")
     
-    guard let url = URL(string: notifyStatusPath) else {
-        Log.error("[Auto-scaling Agent] Invalid URL")
-        return
+    guard var request = try? HTTPClient.Request(url: notifyStatusPath)  else {
+      Log.error("[Auto-scaling Agent] Invalid URL")
+      return
     }
-    var request = URLRequest(url: url)
-    request.httpMethod = "PUT"
-    request.setValue("Basic \(authorization)", forHTTPHeaderField: "Authorization")
-    let task = URLSession.shared.dataTask(with: request) { data, response, error in
-        Log.debug("[Auto-scaling Agent] notifyStatus:Request: \(String(describing:request))")
-        Log.debug("[Auto-scaling Agent] notifyStatus:Response: \(String(describing:response))")
-        Log.debug("[Auto-scaling Agent] notifyStatus:Data: \(String(describing: data))")
-        Log.debug("[Auto-scaling Agent] notifyStatus:Error: \(String(describing: error))")
-    }
-    task.resume()
     
+    request.method = .PUT
+    request.headers.add(name: "Authorization", value: "Basic \(authorization)")
+    let client = HTTPClient(eventLoopGroupProvider: .createNew)
+    defer {
+      try? client.syncShutdown()
+    }
+    client.execute(request: request).whenComplete { result in
+      switch result {
+        case .success(let response):
+          Log.debug("[Auto-scaling Agent] notifyStatus:Request: \(String(describing:request))")
+          Log.debug("[Auto-scaling Agent] notifyStatus:Response: \(String(describing:response))")
+          Log.debug("[Auto-scaling Agent] notifyStatus:Data: \(String(describing: response.body))")
+        case .failure(let error):
+          Log.debug("[Auto-scaling Agent] notifyStatus:Error: \(String(describing: error))")
+      }
+    }    
   }
 
 
@@ -435,28 +449,33 @@ public class SwiftMetricsBluemix {
     let refreshConfigPath = "\(host):443/v1/agent/config/\(serviceID)/\(appID)?appType=swift"
     Log.debug("[Auto-scaling Agent] Attempting requestConfig request to \(refreshConfigPath)")
 
-    guard let url = URL(string: refreshConfigPath) else {
-        Log.error("[Auto-scaling Agent] Invalid URL")
-        return
+    guard var request = try? HTTPClient.Request(url: refreshConfigPath)  else {
+      Log.error("[Auto-scaling Agent] Invalid URL")
+      return
     }
-    var request = URLRequest(url: url)
-    request.httpMethod = "GET"
-    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    request.setValue("Basic \(authorization)", forHTTPHeaderField: "Authorization")
-    let task = URLSession.shared.dataTask(with: request) { data, response, error in
-        Log.debug("[Auto-scaling Agent] requestConfig:Request: \(String(describing:request))")
-        Log.debug("[Auto-scaling Agent] requestConfig:Response: \(String(describing:response))")
-        Log.debug("[Auto-scaling Agent] requestConfig:Data: \(String(describing: data))")
-        Log.debug("[Auto-scaling Agent] requestConfig:Error: \(String(describing: error))")
-        Log.debug("[Auto-scaling Agent] requestConfig:Body: \(String(describing: data))")
-        if let responseData = data {
-            self.updateConfiguration(response: responseData)
-        } else {
+    request.method = .GET
+    request.headers.add(name: "Content-Type", value: "application/json")
+    request.headers.add(name: "Authorization", value: "Basic \(authorization)")
+    let client = HTTPClient(eventLoopGroupProvider: .createNew)
+    defer {
+      try? client.syncShutdown()
+    }
+    client.execute(request: request).whenComplete { result in
+      switch result {
+        case .success(let response):
+          Log.debug("[Auto-scaling Agent] requestConfig:Request: \(String(describing:request))")
+          Log.debug("[Auto-scaling Agent] requestConfig:Response: \(String(describing:response))")
+          guard let body = response.body, let responseBytes = body.getBytes(at: 0, length: body.readableBytes) else {
             print("Error updating configuration. Data doesn't exist.")
-        }
-    }
-    task.resume()
-    
+            return 
+          }
+          self.updateConfiguration(response: Data(responseBytes))
+          Log.debug("[Auto-scaling Agent] requestConfig:Data: \(String(describing: Data(responseBytes)))")
+          Log.debug("[Auto-scaling Agent] requestConfig:Body: \(String(describing: response.body))")
+        case .failure(let error):
+          Log.debug("[Auto-scaling Agent] notifyStatus:Error: \(String(describing: error))")
+      }
+    }        
   }
 
   // Update local config from autoscaling service
